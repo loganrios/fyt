@@ -1,0 +1,232 @@
+#!/usr/bin/env bb
+;;; FILE: fyt
+;;; TODO: organize by usage
+
+(require '[babashka.cli :as cli])
+(require '[babashka.process :refer [shell]])
+(require '[babashka.fs :as fs])
+
+;;
+;; UTILITIES
+;;
+
+(defn which [prog] (-> (shell {:out :string} "which" prog)
+                       :out str/split-lines first))
+
+(defn shsh
+  "Shows calls to shell when verbose and don't run in dry-run."
+  [{:keys [verbose dry-run] :as opts} & args]
+  (when verbose (do (prn opts) (printf "shell command: ") (prn args) (printf "\n\n")))
+  (when-not dry-run (apply shell args)))
+
+(def yt-dlp (which "yt-dlp"))
+
+(def iina (which "iina"))
+
+;;
+;; ENVIRONMENT
+;;
+
+(def config-dir (fs/xdg-config-home "fyt"))
+
+(def cache-dir (fs/xdg-cache-home "fyt"))
+
+;;
+;; ALIAS
+;;
+
+(def alias-file (str config-dir "/aliases.edn"))
+
+(defn load-aliases []
+  (if (fs/exists? alias-file)
+    (edn/read-string (slurp alias-file))
+    {}))
+
+(defn save-aliases [aliases]
+  (when-not (fs/exists? config-dir) (fs/create-dirs config-dir))
+  (spit alias-file (pr-str aliases)))
+
+(defn add-alias [nm locator]
+  (let [aliases (load-aliases)
+        new-aliases (assoc aliases (str "_" nm) locator)]
+    (save-aliases new-aliases)))
+
+(defn get-locator [nm]
+  (let [aliases (load-aliases)]
+    (get aliases nm nm)))
+
+(def alias-spec
+  {:locator {:ref "LOCATOR"
+             :desc "existing locator (video id, url)"
+             :required true}
+  :name {:ref "NAME"
+          :desc "new name (will be prefixed with `_`)"
+          :required true}})
+
+(defn alias-cmd [{:keys [opts]}]
+  (let [{:keys [name locator]} opts]
+    (println "adding name" (str "\"_" name "\"") "as alias for" locator)
+    (add-alias name locator)))
+
+;;
+;; GENERIC VIDEO
+;;
+
+(def video-spec
+  {:quality {:ref "QUALITY"
+             :desc "lo(480p), md(720p), OR hi(1080p)"
+             :coerce :keyword
+             :alias :q
+             :validate {:pred #(contains? #{:lo :md :hi} %)
+                        :ex-msg #(println
+                                  (:option %) " invalid, "
+                                  (:value %) " is not lo/md/hi")}}
+   :locator {:ref "LOCATOR"
+              :desc "a URL, YouTube ID, or quickref (tbd)"
+              :alias :l
+              :require true}})
+
+;; TODO do a str replace instead
+(def quality-arg-map
+  {:lo "-f 'bestvideo[height<=480]+bestaudio/best[height<=480]'"
+   :md "-f 'bestvideo[height<=720]+bestaudio/best[height<=720]'"
+   :hi "-f 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'`"})
+
+;;
+;; DL
+;;
+
+(def dl-spec
+  {:kind {:ref "DL_TYPE"
+          :desc "mp3, wav, mp4, mkv, srt, or vtt"
+          :coerce :keyword
+          :alias :k
+          :default :mp4
+          :default-desc "mp4"
+          :validate {:pred #(contains? #{:mp3 :wav :mp4 :mkv :vtt} %)
+                     :ex-msg #(println (:option %) " is not supported.")}}
+   :basename {:ref "FILENAME"
+              :desc "pre-extension filename"
+              :alias :o}})
+
+(def audio-formats #{:mp3 :wav})
+
+(def sub-formats #{:vtt :srt})
+
+(defn dl-cmd [{:keys [opts]}]
+  (let [{:keys [quality locator kind basename]} opts]
+    (shsh opts
+          yt-dlp (get-locator locator)
+          (cond
+            (contains? audio-formats kind)
+            (str "-x --audio-format " (name kind) " "
+                 "-o " (str basename "." kind))
+            (contains? sub-formats kind)
+            (str "--write-auto-subs "
+                 "--sub-format " (name kind) " "
+                 "--skip-download")
+            :else
+            (str "-o " (str basename "." (name kind)))))))
+
+;;
+;; PLAY
+;;
+
+(def play-spec
+  (merge
+   video-spec
+   {:pipe-to {:ref "CMD"
+              :desc "shell cmd to play video from STDIN"
+              :alias :p
+              :default (str iina " --stdin --keep-running")
+              :default-desc "iina -"}}))
+
+;; TODO `sh-c` fn that can do pipes?
+(defn play-cmd [{:keys [opts]}]
+  (let [{:keys [quality locator pipe-to]} opts
+        shell-cmd (str yt-dlp " " (get-locator locator) " -o - | " pipe-to)]
+    (shsh opts "sh -c" shell-cmd)))
+
+;;
+;; SEARCH
+;;
+
+(def search-spec
+  {:query {:ref "STR"
+           :desc "search YouTube for this string"
+           :alias :Q
+           :require true}
+   :count {:ref "N"
+           :desc "number of results to find"
+           :coerce :int
+           :alias :n
+           :default 5}})
+
+(def search-fmt-str
+  (str "%(id)s : \"%(title)s\" "
+       "length %(duration>%Hh%Mm%Ss)s "
+       "on %(upload_date>%Y-%m)s "
+       "by \"%(channel)s\" id %(channel_id)s "
+       "views %(view_count)s"))
+
+(defn search-cmd [{:keys [opts]}]
+  (let [{:keys [query count] :as opts} opts
+        ytsearch (str "ytsearch" count ":\"" query "\"")]
+    (shsh opts {:out ".fyt-results"} yt-dlp ytsearch "-o" search-fmt-str "--get-filename")
+    (print (slurp ".fyt-results"))))
+
+(def global-spec
+  {:verbose {:alias :v
+             :coerce :boolean
+             :default false}
+   :dry-run {:alias :X
+             :coerce :boolean
+             :desc "don't run constructed shell commands"
+             :default false}})
+
+;;
+;; GLOBAL
+;;
+
+(defn usage [[cmd spec]] (str cmd "\n" (cli/format-opts {:spec spec}) "\n\n"))
+
+(defn help-cmd [_]
+  (println
+   (str
+    "Usage: `fyt <cmd>`, where <cmd> is one of...\n\n"
+    (apply str (map usage
+                    [["(any)" global-spec]
+                     ["alias <LOCATOR> <NAME>" alias-spec]
+                     ["dl <LOCATOR>" dl-spec]
+                     ["play <LOCATOR>" play-spec]
+                     ["search <QUERY>" search-spec]])))))
+
+;;
+;; MAIN
+;;
+
+(def cmd-table
+  [{:cmds []
+    :fn help-cmd
+    :spec global-spec}
+   {:cmds ["dl"]
+    :fn dl-cmd
+    :args->opts [:locator]
+    :spec dl-spec}
+   {:cmds ["play"]
+    :fn play-cmd
+    :args->opts [:locator]
+    :spec play-spec}
+   {:cmds ["search"]
+    :fn search-cmd
+    :args->opts [:query]
+    :spec search-spec}
+   {:cmds ["alias"]
+    :fn alias-cmd
+    :args->opts [:locator :name]
+    :spec alias-spec}])
+
+(cli/dispatch cmd-table *command-line-args*)
+
+;; test with id "26j1pkS83dQ"
+;; ...yes, it's butter dog
