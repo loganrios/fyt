@@ -1,6 +1,5 @@
 #!/usr/bin/env bb
 ;;; FILE: fyt
-;;; TODO: organize by usage
 
 (require '[babashka.cli :as cli])
 (require '[babashka.process :refer [shell]])

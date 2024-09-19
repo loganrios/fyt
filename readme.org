@@ -3,7 +3,7 @@
 A Babashka script meant to emulate the YouTube browsing experience from the comfort of your terminal, with none of the clutter (ads, recommendations, comments). MacOS-only, for the time being.
 
 * Usage
-IMPORTANT: You /must/ have =yt-dlp= in your =$PATH= for right now. =iina-cli= is optional, but it'll work out-of-the-box on a Homebrew MacOS install.
+IMPORTANT: You /must/ have =yt-dlp= in your =$PATH= for right now. Also Babashka. =iina-cli= is optional, but it'll work out-of-the-box on a Homebrew MacOS install.
 
 Run ~./fyt~ without any arguments to see what you can do. Currently supported: =search=, =play=, =dl=, and (for convenience) =alias=.
 
@@ -13,6 +13,8 @@ If you see a video ID that you'd like to watch later, you can use =alias= to giv
 The biggest thing you'll notice is that =fyt search= creates a file called =.fyt-results= in the directory from which it is run. This isn't an accident, but it is an ugly workaround from YouTube video IDs being really unfun to type by hand or memorize. It's meant to be used in tandem with =alias=.
 
 * Roadmap
+It doesn't actually download MP4s right now on every video, for some reason. Maybe this is a per-video thing. We'll figure it out.
+
 The biggest goal is getting =search= to not be so dang ugly. The =.fyt-results= file is fine, but with luck it'll soon migrate to =$XDG_CACHE_HOME/fyt/results.edn=, so I wouldn't write anything to it.
 
 Maybe I'll support a non-MacOS target at some point.
